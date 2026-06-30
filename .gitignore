@@ -235,3 +235,12 @@ x86/
 
 # Built Visual Studio Code Extensions
 *.vsix
+Assets/Scenes
+Assets/XRI
+Assets/XR
+Assets/VRTemplateAssets
+Assets/TextMesh Pro
+Assets/Settings
+Assets/Samples
+Assets/CompositionLayers
+Assets/Fantasy Skybox FREE
