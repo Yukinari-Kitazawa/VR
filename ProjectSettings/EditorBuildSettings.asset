@@ -6,6 +6,9 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
+    path: Assets/Scenes/NightShiftPrototype.unity
+    guid: 784d58d49947bec45968ee72ba48e492
+  - enabled: 1
     path: Assets/Scenes/VR41.unity
     guid: 74e30ae3591fe30498fc619119fc655d
   - enabled: 0
