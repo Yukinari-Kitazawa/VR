@@ -2,13 +2,23 @@ using UnityEngine;
 
 public sealed class NightShiftEnemyStalker : MonoBehaviour
 {
+    private static readonly string[] CameraLocationNames =
+    {
+        "倉庫",
+        "裏通路",
+        "中央廊下",
+        "分岐通路"
+    };
+
     [SerializeField] private NightShiftGameController gameController;
     [SerializeField] private Transform[] waypoints;
+    [SerializeField] private Transform leftDoorWaypoint;
+    [SerializeField] private Transform rightDoorWaypoint;
     [SerializeField] private Vector2 moveCheckIntervalSeconds = new Vector2(5f, 8f);
-    [SerializeField, Range(0f, 1f)] private float baseAdvanceChance = 0.18f;
+    [SerializeField, Range(0f, 1f)] private float baseAdvanceChance = 0.24f;
     [SerializeField, Range(0f, 0.25f)] private float hourlyAdvanceChanceBonus = 0.07f;
-    [SerializeField, Range(0f, 1f)] private float observedChanceMultiplier = 0.12f;
-    [SerializeField, Min(1)] private int maximumFailedMoveChecks = 5;
+    [SerializeField, Range(0f, 1f)] private float observedChanceMultiplier = 0.18f;
+    [SerializeField, Min(1)] private int maximumFailedMoveChecks = 3;
     [SerializeField] private float doorAttackDelay = 4.5f;
     [SerializeField] private Vector2 powerOutRushDelaySeconds = new Vector2(6f, 11f);
     [SerializeField] private float visualMoveSpeed = 2.2f;
@@ -20,10 +30,12 @@ public sealed class NightShiftEnemyStalker : MonoBehaviour
     private float powerOutRushTimer;
     private bool isAttackingDoor;
     private bool powerOutRush;
+    private NightShiftAttackSide attackSide;
 
     public int StageIndex => stageIndex;
     public int CameraCount => waypoints != null ? waypoints.Length : 0;
-    public bool IsAtDoor => CameraCount > 0 && stageIndex >= CameraCount - 1;
+    public bool IsAtDoor => isAttackingDoor;
+    public NightShiftAttackSide AttackSide => attackSide;
 
     private void Awake()
     {
@@ -32,10 +44,12 @@ public sealed class NightShiftEnemyStalker : MonoBehaviour
             gameController = GetComponentInParent<NightShiftGameController>();
     }
 
-    public void Configure(NightShiftGameController controller, Transform[] route)
+    public void Configure(NightShiftGameController controller, Transform[] route, Transform leftAttackPoint, Transform rightAttackPoint)
     {
         gameController = controller;
         waypoints = route;
+        leftDoorWaypoint = leftAttackPoint;
+        rightDoorWaypoint = rightAttackPoint;
     }
 
     private void Start()
@@ -75,12 +89,13 @@ public sealed class NightShiftEnemyStalker : MonoBehaviour
         stageIndex = 0;
         isAttackingDoor = false;
         powerOutRush = false;
+        attackSide = NightShiftAttackSide.Left;
         attackTimer = 0f;
         powerOutRushTimer = 0f;
         failedMoveChecks = 0;
         ScheduleNextMoveCheck();
 
-        if (CameraCount > 0)
+        if (CameraCount > 0 && waypoints[0] != null)
             transform.position = waypoints[0].position;
     }
 
@@ -88,6 +103,7 @@ public sealed class NightShiftEnemyStalker : MonoBehaviour
     {
         powerOutRush = true;
         isAttackingDoor = false;
+        ChooseAttackSide();
         float minimum = Mathf.Min(powerOutRushDelaySeconds.x, powerOutRushDelaySeconds.y);
         float maximum = Mathf.Max(powerOutRushDelaySeconds.x, powerOutRushDelaySeconds.y);
         powerOutRushTimer = Random.Range(minimum, maximum);
@@ -96,27 +112,32 @@ public sealed class NightShiftEnemyStalker : MonoBehaviour
     public string GetCameraFeedText(int cameraIndex)
     {
         if (CameraCount == 0)
-            return "CAM -- / OFFLINE\nSIGNAL LOST";
+            return "CAM -- / オフライン\n映像信号なし";
 
         cameraIndex = Mathf.Clamp(cameraIndex, 0, CameraCount - 1);
-        string cameraName = GetCameraName(cameraIndex);
         bool subjectVisible = !powerOutRush && stageIndex == cameraIndex;
-
         string subjectStatus;
-        if (subjectVisible && isAttackingDoor)
-            subjectStatus = "SUBJECT AT OFFICE ENTRANCE";
-        else if (subjectVisible)
-            subjectStatus = "SUBJECT DETECTED";
-        else
-            subjectStatus = "NO MOTION DETECTED";
 
-        return cameraName + "\n" + subjectStatus + "\n" + BuildCameraMap(cameraIndex);
+        if (subjectVisible && isAttackingDoor)
+            subjectStatus = attackSide == NightShiftAttackSide.Left ? "対象: 左通路へ移動" : "対象: 右通路へ移動";
+        else if (subjectVisible)
+            subjectStatus = "対象を検知";
+        else
+            subjectStatus = "動体反応なし";
+
+        return GetCameraName(cameraIndex) + "\n" + subjectStatus + "\n" + BuildCameraMap(cameraIndex);
     }
 
     private void EvaluateMoveOpportunity()
     {
-        if (CameraCount == 0 || IsAtDoor)
+        if (CameraCount == 0)
             return;
+
+        if (stageIndex >= CameraCount - 1)
+        {
+            BeginDoorAttack();
+            return;
+        }
 
         float advanceChance = baseAdvanceChance + gameController.CurrentHourIndex * hourlyAdvanceChanceBonus;
         if (gameController.IsCameraWatching(stageIndex))
@@ -129,12 +150,24 @@ public sealed class NightShiftEnemyStalker : MonoBehaviour
 
         failedMoveChecks = 0;
         stageIndex = Mathf.Min(stageIndex + 1, CameraCount - 1);
-        if (IsAtDoor)
-        {
-            isAttackingDoor = true;
-            attackTimer = doorAttackDelay;
-            gameController.SetDanger("Movement detected at the office entrance.");
-        }
+        gameController.NotifyEnemyMoved(stageIndex);
+
+        if (stageIndex >= CameraCount - 1)
+            BeginDoorAttack();
+    }
+
+    private void BeginDoorAttack()
+    {
+        ChooseAttackSide();
+        isAttackingDoor = true;
+        attackTimer = doorAttackDelay;
+        string sideLabel = attackSide == NightShiftAttackSide.Left ? "左" : "右";
+        gameController.SetDanger(sideLabel + "通路で接近反応");
+    }
+
+    private void ChooseAttackSide()
+    {
+        attackSide = Random.value < 0.5f ? NightShiftAttackSide.Left : NightShiftAttackSide.Right;
     }
 
     private void UpdateDoorAttack()
@@ -143,17 +176,17 @@ public sealed class NightShiftEnemyStalker : MonoBehaviour
         if (attackTimer > 0f)
             return;
 
-        if (gameController.IsDoorClosed)
+        if (gameController.IsDoorClosed(attackSide))
         {
             stageIndex = Mathf.Max(1, CameraCount - 3);
             isAttackingDoor = false;
             failedMoveChecks = 0;
             ScheduleNextMoveCheck();
-            gameController.BlockEnemyAtDoor();
+            gameController.BlockEnemyAtDoor(attackSide);
             return;
         }
 
-        gameController.LoseNight("The figure entered the office.");
+        gameController.LoseNight("侵入者がオフィスに入りました。");
     }
 
     private void UpdatePowerOutRush()
@@ -166,6 +199,7 @@ public sealed class NightShiftEnemyStalker : MonoBehaviour
         stageIndex = Mathf.Max(0, CameraCount - 1);
         isAttackingDoor = true;
         attackTimer = Random.Range(2f, 4f);
+        gameController.SetDanger("停電中: 接近反応");
     }
 
     private void ScheduleNextMoveCheck()
@@ -180,22 +214,23 @@ public sealed class NightShiftEnemyStalker : MonoBehaviour
         if (moveCheckIntervalSeconds.x <= 0f || moveCheckIntervalSeconds.y <= 0f)
             moveCheckIntervalSeconds = new Vector2(5f, 8f);
         if (baseAdvanceChance <= 0f)
-            baseAdvanceChance = 0.18f;
+            baseAdvanceChance = 0.24f;
         if (hourlyAdvanceChanceBonus <= 0f)
             hourlyAdvanceChanceBonus = 0.07f;
         if (observedChanceMultiplier <= 0f)
-            observedChanceMultiplier = 0.12f;
+            observedChanceMultiplier = 0.18f;
         if (maximumFailedMoveChecks <= 0)
-            maximumFailedMoveChecks = 5;
+            maximumFailedMoveChecks = 3;
         if (powerOutRushDelaySeconds.x <= 0f || powerOutRushDelaySeconds.y <= 0f)
             powerOutRushDelaySeconds = new Vector2(6f, 11f);
     }
 
     private string GetCameraName(int cameraIndex)
     {
-        string location = waypoints[cameraIndex] != null ? waypoints[cameraIndex].name.ToUpperInvariant() : "OFFLINE";
-        int cameraNumber = CameraCount - cameraIndex;
-        return "CAM " + cameraNumber.ToString("00") + " / " + location;
+        string location = cameraIndex < CameraLocationNames.Length
+            ? CameraLocationNames[cameraIndex]
+            : "不明";
+        return "CAM " + (cameraIndex + 1).ToString("00") + " / " + location;
     }
 
     private string BuildCameraMap(int selectedCamera)
@@ -206,12 +241,11 @@ public sealed class NightShiftEnemyStalker : MonoBehaviour
             if (i > 0)
                 map += "-";
 
-            int cameraNumber = CameraCount - i;
-            string marker = cameraNumber.ToString("00");
+            string marker = (i + 1).ToString("00");
             map += i == selectedCamera ? "[>" + marker + "<]" : "[" + marker + "]";
         }
 
-        return map + ">OFFICE";
+        return map + ">左右ドア";
     }
 
     private void UpdateVisualPosition()
@@ -219,7 +253,15 @@ public sealed class NightShiftEnemyStalker : MonoBehaviour
         if (CameraCount == 0)
             return;
 
-        Vector3 target = waypoints[Mathf.Clamp(stageIndex, 0, CameraCount - 1)].position;
-        transform.position = Vector3.Lerp(transform.position, target, Time.deltaTime * visualMoveSpeed);
+        Transform targetTransform = waypoints[Mathf.Clamp(stageIndex, 0, CameraCount - 1)];
+        if (isAttackingDoor)
+        {
+            Transform attackTarget = attackSide == NightShiftAttackSide.Left ? leftDoorWaypoint : rightDoorWaypoint;
+            if (attackTarget != null)
+                targetTransform = attackTarget;
+        }
+
+        if (targetTransform != null)
+            transform.position = Vector3.Lerp(transform.position, targetTransform.position, Time.deltaTime * visualMoveSpeed);
     }
 }

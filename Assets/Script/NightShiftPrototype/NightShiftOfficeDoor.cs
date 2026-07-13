@@ -64,7 +64,7 @@ public sealed class NightShiftOfficeDoor : MonoBehaviour
 
         if (indicatorRenderer != null)
         {
-            Material material = indicatorRenderer.material;
+            Material material = Application.isPlaying ? indicatorRenderer.material : indicatorRenderer.sharedMaterial;
             if (material.HasProperty("_BaseColor"))
                 material.SetColor("_BaseColor", color);
             if (material.HasProperty("_Color"))

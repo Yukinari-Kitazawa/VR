@@ -1,21 +1,24 @@
+using System.Collections;
+using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.Serialization;
 using UnityEngine.UI;
 
 public sealed class NightShiftGameController : MonoBehaviour
 {
     private static readonly string[] CameraNames =
     {
-        "CAM 04 / STORAGE",
-        "CAM 03 / BACK HALL",
-        "CAM 02 / MAIN HALL",
-        "CAM 01 / OFFICE DOOR"
+        "CAM 01 / 倉庫",
+        "CAM 02 / 裏通路",
+        "CAM 03 / 中央廊下",
+        "CAM 04 / 分岐通路"
     };
 
     private enum NightState
     {
-        Title,
+        Initializing,
         Playing,
         Paused,
         Won,
@@ -37,10 +40,13 @@ public sealed class NightShiftGameController : MonoBehaviour
     [SerializeField] private Camera playerCamera;
     [SerializeField] private NightShiftVRRigController vrRig;
     [SerializeField] private Transform interactionRayOrigin;
-    [SerializeField] private NightShiftOfficeDoor officeDoor;
+    [SerializeField, FormerlySerializedAs("officeDoor")] private NightShiftOfficeDoor leftDoor;
+    [SerializeField] private NightShiftOfficeDoor rightDoor;
     [SerializeField] private NightShiftEnemyStalker enemyStalker;
-    [SerializeField] private Light officeLight;
-    [SerializeField] private Light hallwayLight;
+    [SerializeField, FormerlySerializedAs("officeLight")] private Light leftHallLight;
+    [SerializeField, FormerlySerializedAs("hallwayLight")] private Light rightHallLight;
+    [SerializeField] private NightShiftSecurityCameraSystem securityCameraSystem;
+    [SerializeField] private NightShiftAudioController audioController;
 
     [Header("UI")]
     [SerializeField] private TextMeshProUGUI timerText;
@@ -49,8 +55,6 @@ public sealed class NightShiftGameController : MonoBehaviour
     [SerializeField] private TextMeshProUGUI promptText;
     [SerializeField] private TextMeshProUGUI dangerText;
     [SerializeField] private TextMeshProUGUI monitorFeedText;
-    [SerializeField] private TextMeshProUGUI resultTitleText;
-    [SerializeField] private TextMeshProUGUI resultBodyText;
     [SerializeField] private GameObject titlePanel;
     [SerializeField] private GameObject pausePanel;
     [SerializeField] private GameObject resultPanel;
@@ -63,16 +67,27 @@ public sealed class NightShiftGameController : MonoBehaviour
     [SerializeField] private float monitorUiSurfaceOffset = 0.096f;
     [SerializeField] private Vector3 monitorUiLocalPosition = Vector3.zero;
     [SerializeField] private Vector3 monitorUiLocalEulerAngles = new Vector3(0f, 180f, 0f);
-    [SerializeField] private Vector3 monitorUiLocalScale = Vector3.one * 0.0009f;
+    [SerializeField] private Vector3 monitorUiLocalScale = Vector3.one * 0.00112f;
     [SerializeField] private Vector2 monitorUiSize = new Vector2(1200f, 680f);
 
-    [Header("Menu UI")]
-    [SerializeField] private Vector3 menuUiLocalPosition = new Vector3(0f, -0.04f, 2.35f);
-    [SerializeField] private Vector3 menuUiLocalEulerAngles = Vector3.zero;
-    [SerializeField] private Vector3 menuUiLocalScale = Vector3.one * 0.0018f;
-    [SerializeField] private Vector2 menuUiSize = new Vector2(1600f, 900f);
+    [Header("Camera-space UI")]
+    [SerializeField, Min(0.1f)] private float menuUiPlaneDistance = 1.5f;
+    [SerializeField, FormerlySerializedAs("menuUiSize")] private Vector2 menuUiReferenceResolution = new Vector2(1600f, 900f);
+    [SerializeField, Range(0f, 1f)] private float menuUiScreenMatch = 0.5f;
 
-    private NightState state = NightState.Title;
+    [Header("HUD Positions (1600 x 900 Reference)")]
+    [SerializeField, Tooltip("Offset from the top-left anchor. Positive Y moves upward.")]
+    private Vector2 timerHudPosition = new Vector2(120f, -85f);
+    [SerializeField, Tooltip("Offset from the top-right anchor. Negative X moves left.")]
+    private Vector2 powerHudPosition = new Vector2(-120f, -85f);
+    [SerializeField, Tooltip("Offset from the bottom-left anchor.")]
+    private Vector2 statusHudPosition = new Vector2(120f, 100f);
+    [SerializeField, Tooltip("Offset from the bottom-center anchor.")]
+    private Vector2 promptHudPosition = new Vector2(0f, 165f);
+    [SerializeField, Tooltip("Offset from the top-center anchor.")]
+    private Vector2 dangerHudPosition = new Vector2(0f, -145f);
+
+    private NightState state = NightState.Initializing;
     private float elapsedNightTime;
     private float power;
     private bool monitorOpen;
@@ -80,15 +95,22 @@ public sealed class NightShiftGameController : MonoBehaviour
     private int selectedCameraIndex;
     private NightShiftInteractable focusedInteractable;
     private Light officeFillLight;
-    private Renderer lightControlRenderer;
+    private Renderer leftLightControlRenderer;
+    private Renderer rightLightControlRenderer;
+    private readonly List<Material> runtimeOverlayMaterials = new List<Material>();
 
     public bool IsPlaying => state == NightState.Playing;
     public bool IsMonitorOpen => monitorOpen;
-    public bool IsDoorClosed => officeDoor != null && officeDoor.IsClosed;
     public bool PlayerHasControl => state == NightState.Playing && !monitorOpen;
     public int SelectedCameraIndex => selectedCameraIndex;
     public int CurrentHourIndex => GetCurrentHourIndex();
     public float NightProgress => Mathf.Clamp01(elapsedNightTime / Mathf.Max(1f, nightLengthSeconds));
+
+    public bool IsDoorClosed(NightShiftAttackSide side)
+    {
+        NightShiftOfficeDoor door = side == NightShiftAttackSide.Left ? leftDoor : rightDoor;
+        return door != null && door.IsClosed;
+    }
 
     public bool IsCameraWatching(int cameraIndex)
     {
@@ -98,12 +120,18 @@ public sealed class NightShiftGameController : MonoBehaviour
     private void Awake()
     {
         NormalizeRuleTuning();
+        if (audioController == null)
+            audioController = GetComponent<NightShiftAudioController>();
+        if (securityCameraSystem == null)
+            securityCameraSystem = GetComponent<NightShiftSecurityCameraSystem>();
+
         power = startingPower;
-        SetPanelActive(titlePanel, true);
+        SetPanelActive(titlePanel, false);
         SetPanelActive(pausePanel, false);
         SetPanelActive(resultPanel, false);
         SetPanelActive(monitorPanel, false);
         SetPanelActive(jumpscarePanel, false);
+        NightShiftJapaneseFont.ApplyToChildren(transform);
         Time.timeScale = 1f;
     }
 
@@ -129,19 +157,15 @@ public sealed class NightShiftGameController : MonoBehaviour
         PlaceReachableControls();
         ConfigureWorldVisibility();
         ResetNightObjects();
-        ShowTitle();
+        BeginNight();
     }
 
     private void ResetPlayerRigToOffice()
     {
-        if (vrRig == null || officeDoor == null)
+        if (vrRig == null)
             return;
 
-        Vector3 officeForward = officeDoor.transform.forward;
-        Vector3 rigPosition = officeDoor.transform.position + officeForward * 4.83f;
-        rigPosition.y = officeDoor.transform.position.y;
-        Quaternion rigRotation = Quaternion.LookRotation(-officeForward, Vector3.up);
-        vrRig.SetFixedPose(rigPosition, rigRotation);
+        vrRig.RecenterTrackingOrigin();
     }
 
     private void Update()
@@ -149,19 +173,8 @@ public sealed class NightShiftGameController : MonoBehaviour
         if (vrRig != null && vrRig.PausePressedThisFrame)
             HandlePauseInput();
 
-        if (state == NightState.Title)
-        {
-            if (vrRig != null && vrRig.ConfirmPressedThisFrame)
-                BeginNight();
-            return;
-        }
-
         if (state == NightState.Won || state == NightState.Lost)
-        {
-            if (vrRig != null && vrRig.ConfirmPressedThisFrame)
-                RestartScene();
             return;
-        }
 
         if (state == NightState.Paused)
         {
@@ -180,6 +193,13 @@ public sealed class NightShiftGameController : MonoBehaviour
         UpdateHud();
     }
 
+    private void OnValidate()
+    {
+        menuUiPlaneDistance = Mathf.Max(0.1f, menuUiPlaneDistance);
+        menuUiScreenMatch = Mathf.Clamp01(menuUiScreenMatch);
+        ConfigureVrHudLayout();
+    }
+
     public void UseInteraction(NightShiftInteractionAction action)
     {
         if (state != NightState.Playing)
@@ -187,15 +207,20 @@ public sealed class NightShiftGameController : MonoBehaviour
 
         switch (action)
         {
-            case NightShiftInteractionAction.ToggleDoor:
-                if (officeDoor != null)
-                    officeDoor.SetClosed(!officeDoor.IsClosed);
+            case NightShiftInteractionAction.ToggleLeftDoor:
+                ToggleDoor(leftDoor);
                 break;
             case NightShiftInteractionAction.ToggleMonitor:
                 SetMonitorOpen(!monitorOpen);
                 break;
-            case NightShiftInteractionAction.ToggleOfficeLight:
-                ToggleOfficeLight();
+            case NightShiftInteractionAction.ToggleLeftLight:
+                ToggleHallLight(leftHallLight);
+                break;
+            case NightShiftInteractionAction.ToggleRightDoor:
+                ToggleDoor(rightDoor);
+                break;
+            case NightShiftInteractionAction.ToggleRightLight:
+                ToggleHallLight(rightHallLight);
                 break;
         }
     }
@@ -215,20 +240,33 @@ public sealed class NightShiftGameController : MonoBehaviour
             dangerText.gameObject.SetActive(false);
     }
 
-    public void BlockEnemyAtDoor()
+    public void NotifyEnemyMoved(int stageIndex)
     {
-        if (hallwayLight != null)
-            hallwayLight.intensity = 1.1f;
+        if (audioController != null)
+            audioController.PlayEnemyMove();
 
-        SetDanger("Impact blocked. It retreated.");
-        Invoke(nameof(RestoreHallwayLight), 0.45f);
+        if (monitorOpen && selectedCameraIndex == stageIndex)
+            SetDanger("監視中のカメラで動きを検知");
+    }
+
+    public void BlockEnemyAtDoor(NightShiftAttackSide side)
+    {
+        Light hallLight = side == NightShiftAttackSide.Left ? leftHallLight : rightHallLight;
+        if (hallLight != null)
+            hallLight.intensity = 2.2f;
+
+        if (audioController != null)
+            audioController.PlayDoorImpact();
+
+        SetDanger((side == NightShiftAttackSide.Left ? "左" : "右") + "ドアで侵入を防ぎました");
+        Invoke(nameof(RestoreHallLights), 0.45f);
         Invoke(nameof(ClearDanger), 2.25f);
     }
 
-    private void RestoreHallwayLight()
+    private void RestoreHallLights()
     {
-        if (hallwayLight != null)
-            hallwayLight.intensity = 0.65f;
+        ConfigureHallLight(leftHallLight);
+        ConfigureHallLight(rightHallLight);
     }
 
     public void LoseNight(string reason)
@@ -239,11 +277,15 @@ public sealed class NightShiftGameController : MonoBehaviour
         state = NightState.Lost;
         SetMonitorOpen(false);
         SetPanelActive(jumpscarePanel, true);
-        ShowResult("YOU DIED", reason);
+        if (audioController != null)
+            audioController.PlayJumpscare();
+        NightShiftSceneFlow.SetResult(false, "ゲームオーバー", reason);
+        StartCoroutine(LoadResultSceneAfterDelay());
     }
 
     private void BeginNight()
     {
+        NightShiftSceneFlow.ClearResult();
         state = NightState.Playing;
         elapsedNightTime = 0f;
         power = startingPower;
@@ -251,19 +293,10 @@ public sealed class NightShiftGameController : MonoBehaviour
         selectedCameraIndex = 0;
 
         ResetNightObjects();
+        if (audioController != null)
+            audioController.StartNightAmbience();
         SetPanelActive(titlePanel, false);
         SetPanelActive(resultPanel, false);
-        SetPanelActive(jumpscarePanel, false);
-        UpdateHud();
-    }
-
-    private void ShowTitle()
-    {
-        state = NightState.Title;
-        SetPanelActive(titlePanel, true);
-        SetPanelActive(pausePanel, false);
-        SetPanelActive(resultPanel, false);
-        SetPanelActive(monitorPanel, false);
         SetPanelActive(jumpscarePanel, false);
         UpdateHud();
     }
@@ -280,6 +313,7 @@ public sealed class NightShiftGameController : MonoBehaviour
             ConfigureMenuCanvas(menuCanvas);
             MoveMenuUi(menuCanvas.transform);
             UpdateMenuCopy(menuCanvas.transform);
+            ApplyMenuOverlayMaterials(menuCanvas.transform);
         }
 
         Canvas monitorCanvas = GetOrCreateMonitorCanvas(sourceCanvas);
@@ -322,8 +356,13 @@ public sealed class NightShiftGameController : MonoBehaviour
 
     private void ConfigureMenuCanvas(Canvas canvas)
     {
-        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        canvas.worldCamera = null;
+        canvas.renderMode = RenderMode.ScreenSpaceCamera;
+        canvas.worldCamera = playerCamera;
+        float minimumDistance = playerCamera != null ? playerCamera.nearClipPlane + 0.05f : 0.1f;
+        float maximumDistance = playerCamera != null
+            ? Mathf.Max(minimumDistance, playerCamera.farClipPlane - 0.05f)
+            : 100f;
+        canvas.planeDistance = Mathf.Clamp(menuUiPlaneDistance, minimumDistance, maximumDistance);
         canvas.overrideSorting = true;
         canvas.sortingOrder = 100;
         EnsureCanvasComponents(canvas);
@@ -334,11 +373,14 @@ public sealed class NightShiftGameController : MonoBehaviour
         rect.localRotation = Quaternion.identity;
         rect.localScale = Vector3.one;
 
+        Vector2 referenceResolution = menuUiReferenceResolution.x > 0f && menuUiReferenceResolution.y > 0f
+            ? menuUiReferenceResolution
+            : new Vector2(1600f, 900f);
         CanvasScaler scaler = canvas.GetComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(1600f, 900f);
+        scaler.referenceResolution = referenceResolution;
         scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
-        scaler.matchWidthOrHeight = 0.5f;
+        scaler.matchWidthOrHeight = Mathf.Clamp01(menuUiScreenMatch);
     }
 
     private void ConfigureMonitorCanvas(Canvas canvas)
@@ -391,20 +433,35 @@ public sealed class NightShiftGameController : MonoBehaviour
 
     private void ConfigureVrHudLayout()
     {
-        SetHudRect(timerText, new Vector2(100f, -70f), new Vector2(300f, 90f));
-        SetHudRect(powerText, new Vector2(-100f, -70f), new Vector2(440f, 120f));
-        SetHudRect(statusText, new Vector2(100f, 90f), new Vector2(700f, 120f));
-        SetHudRect(promptText, new Vector2(0f, 150f), new Vector2(800f, 60f));
-        SetHudRect(dangerText, new Vector2(0f, -145f), new Vector2(900f, 80f));
+        SetHudRect(timerText, new Vector2(0f, 1f), new Vector2(0f, 1f), timerHudPosition, new Vector2(280f, 110f));
+        SetHudRect(powerText, new Vector2(1f, 1f), new Vector2(1f, 1f), powerHudPosition, new Vector2(400f, 150f));
+        SetHudRect(statusText, new Vector2(0f, 0f), new Vector2(0f, 0f), statusHudPosition, new Vector2(680f, 150f));
+        SetHudRect(promptText, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), promptHudPosition, new Vector2(900f, 80f));
+        SetHudRect(dangerText, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), dangerHudPosition, new Vector2(1000f, 100f));
+
+        SetHudFontSize(timerText, 58f);
+        SetHudFontSize(powerText, 44f);
+        SetHudFontSize(statusText, 32f);
+        SetHudFontSize(promptText, 34f);
+        SetHudFontSize(dangerText, 44f);
     }
 
-    private static void SetHudRect(TMP_Text text, Vector2 anchoredPosition, Vector2 size)
+    private static void SetHudRect(TMP_Text text, Vector2 anchor, Vector2 pivot, Vector2 anchoredPosition, Vector2 size)
     {
         if (text == null)
             return;
 
+        text.rectTransform.anchorMin = anchor;
+        text.rectTransform.anchorMax = anchor;
+        text.rectTransform.pivot = pivot;
         text.rectTransform.anchoredPosition = anchoredPosition;
         text.rectTransform.sizeDelta = size;
+    }
+
+    private static void SetHudFontSize(TMP_Text text, float fontSize)
+    {
+        if (text != null)
+            text.fontSize = fontSize;
     }
 
     private void MoveMonitorUi(Transform parent)
@@ -413,13 +470,9 @@ public sealed class NightShiftGameController : MonoBehaviour
 
         if (monitorFeedText != null)
         {
-            monitorFeedText.fontSize = 64f;
-            monitorFeedText.alignment = TextAlignmentOptions.Center;
+            monitorFeedText.fontSize = 38f;
+            monitorFeedText.alignment = TextAlignmentOptions.TopLeft;
             monitorFeedText.textWrappingMode = TextWrappingModes.Normal;
-
-            RectTransform rect = monitorFeedText.rectTransform;
-            rect.anchoredPosition = Vector2.zero;
-            rect.sizeDelta = new Vector2(1120f, 560f);
         }
     }
 
@@ -430,15 +483,15 @@ public sealed class NightShiftGameController : MonoBehaviour
         {
             if (label.name == "Title Body")
             {
-                label.text = "Survive from 12 AM to 6 AM.\n"
-                    + ConfirmLabel + ": Start\n"
-                    + MonitorLabel + ": Monitor  /  " + CameraSwitchLabel + ": Change camera";
+                label.text = "12 AMから6 AMまで生き残ってください。\n"
+                    + ConfirmLabel + ": 開始\n"
+                    + MonitorLabel + ": モニター  /  " + CameraSwitchLabel + ": カメラ切替";
                 label.fontSize = 30f;
                 label.rectTransform.sizeDelta = new Vector2(1250f, 220f);
             }
             else if (label.name == "Pause Body")
             {
-                label.text = PauseLabel + " or " + ConfirmLabel + ": Resume";
+                label.text = PauseLabel + " または " + ConfirmLabel + ": 再開";
             }
         }
     }
@@ -450,20 +503,32 @@ public sealed class NightShiftGameController : MonoBehaviour
             return;
 
         Vector3 left = -player.right;
+        Vector3 right = player.right;
         Vector3 forward = player.forward;
-        Quaternion controlRotation = Quaternion.LookRotation(left, Vector3.up);
 
-        Vector3 doorPosition = player.position + left * 1.15f + forward * 0.3f;
-        doorPosition.y = 1.45f;
-        PlaceSceneObject("Door Control", doorPosition, controlRotation);
+        PlaceReachableControl("Left Door Control", player, left * 1.02f + forward * 0.28f, 1.45f);
+        PlaceReachableControl("Left Light Control", player, left * 1.02f + forward * 0.28f, 1.02f);
+        PlaceReachableControl("Right Door Control", player, right * 1.02f + forward * 0.28f, 1.45f);
+        PlaceReachableControl("Right Light Control", player, right * 1.02f + forward * 0.28f, 1.02f);
 
-        Vector3 lightPosition = player.position + left * 1.15f + forward * 0.87f;
-        lightPosition.y = 1.45f;
-        PlaceSceneObject("Light Control", lightPosition, controlRotation);
+        PlaceReachableControl("Door Control", player, left * 1.02f + forward * 0.28f, 1.45f);
+        PlaceReachableControl("Light Control", player, left * 1.02f + forward * 0.28f, 1.02f);
+    }
 
-        Vector3 indicatorPosition = player.position + left * 1.05f + forward * 0.3f;
-        indicatorPosition.y = 1.85f;
-        PlaceSceneObject("Door Indicator Light", indicatorPosition, null);
+    private static void PlaceReachableControl(string objectName, Transform player, Vector3 offset, float height)
+    {
+        GameObject sceneObject = GameObject.Find(objectName);
+        if (sceneObject == null)
+            return;
+
+        Vector3 position = player.position + offset;
+        position.y = height;
+        Vector3 lookDirection = player.position - position;
+        lookDirection.y = 0f;
+        Quaternion rotation = lookDirection.sqrMagnitude > 0.001f
+            ? Quaternion.LookRotation(lookDirection.normalized, Vector3.up)
+            : sceneObject.transform.rotation;
+        PlaceSceneObject(objectName, position, rotation);
     }
 
     private static void PlaceSceneObject(string objectName, Vector3 position, Quaternion? rotation)
@@ -484,21 +549,13 @@ public sealed class NightShiftGameController : MonoBehaviour
         if (RenderSettings.fog)
             RenderSettings.fogDensity = Mathf.Min(RenderSettings.fogDensity, 0.02f);
 
-        if (officeLight != null)
-        {
-            officeLight.range = 7f;
-            officeLight.intensity = 1.7f;
-            officeLight.color = new Color(1f, 0.82f, 0.58f);
-            officeLight.shadows = LightShadows.None;
-        }
-
-        Transform environment = officeDoor != null && officeDoor.transform.parent != null
-            ? officeDoor.transform.parent
+        Transform environment = leftDoor != null && leftDoor.transform.parent != null
+            ? leftDoor.transform.parent
             : transform;
 
-        Vector3 fillPosition = officeLight != null
-            ? new Vector3(officeLight.transform.position.x, 2.4f, officeLight.transform.position.z + 0.25f)
-            : officeDoor.transform.position + officeDoor.transform.forward * 4.1f + Vector3.up * 2.4f;
+        Vector3 fillPosition = vrRig != null
+            ? vrRig.transform.position + Vector3.up * 2.4f + vrRig.transform.forward * 0.5f
+            : new Vector3(0f, 2.4f, 1f);
         officeFillLight = FindOrCreatePointLight(
             "Office Fill Light",
             environment,
@@ -512,30 +569,27 @@ public sealed class NightShiftGameController : MonoBehaviour
         RemoveControlDecoration("Light Control Label");
         RemoveControlDecoration("Control Panel Light");
 
-        GameObject doorControl = GameObject.Find("Door Control");
-        GameObject lightControl = GameObject.Find("Light Control");
-        if (doorControl == null || lightControl == null)
+        GameObject leftLightControl = GameObject.Find("Left Light Control") ?? GameObject.Find("Light Control");
+        GameObject rightLightControl = GameObject.Find("Right Light Control");
+        leftLightControlRenderer = leftLightControl != null ? leftLightControl.GetComponent<Renderer>() : null;
+        rightLightControlRenderer = rightLightControl != null ? rightLightControl.GetComponent<Renderer>() : null;
+
+        ConfigureHallLight(leftHallLight);
+        ConfigureHallLight(rightHallLight);
+        UpdateLightControlVisuals();
+    }
+
+    private static void ConfigureHallLight(Light hallLight)
+    {
+        if (hallLight == null)
             return;
 
-        doorControl.transform.localScale = new Vector3(0.42f, 0.62f, 0.2f);
-        lightControl.transform.localScale = new Vector3(0.42f, 0.62f, 0.2f);
-
-        Light doorIndicator = GameObject.Find("Door Indicator Light")?.GetComponent<Light>();
-        if (doorIndicator != null)
-        {
-            doorIndicator.range = 1.5f;
-            doorIndicator.intensity = 0.45f;
-        }
-
-        if (hallwayLight != null)
-        {
-            hallwayLight.range = 7f;
-            hallwayLight.intensity = 0.65f;
-            hallwayLight.shadows = LightShadows.None;
-        }
-
-        lightControlRenderer = lightControl.GetComponent<Renderer>();
-        UpdateLightControlVisual();
+        hallLight.type = LightType.Spot;
+        hallLight.range = 8f;
+        hallLight.intensity = hallLight.enabled ? 2.1f : 0f;
+        hallLight.spotAngle = 72f;
+        hallLight.color = new Color(1f, 0.82f, 0.58f);
+        hallLight.shadows = LightShadows.None;
     }
 
     private static Light FindOrCreatePointLight(string objectName, Transform parent, Vector3 position, Color color, float intensity, float range)
@@ -568,21 +622,27 @@ public sealed class NightShiftGameController : MonoBehaviour
             Object.Destroy(decoration);
     }
 
-    private void UpdateLightControlVisual()
+    private void UpdateLightControlVisuals()
     {
-        if (lightControlRenderer == null)
+        UpdateLightControlVisual(leftLightControlRenderer, leftHallLight);
+        UpdateLightControlVisual(rightLightControlRenderer, rightHallLight);
+    }
+
+    private void UpdateLightControlVisual(Renderer controlRenderer, Light hallLight)
+    {
+        if (controlRenderer == null)
             return;
 
-        if (powerOut)
-        {
-            SetRendererColorAndEmission(lightControlRenderer, new Color(0.08f, 0.08f, 0.08f), Color.black);
-            return;
-        }
-
-        bool lightOn = officeLight != null && officeLight.enabled;
+        bool lightOn = !powerOut && hallLight != null && hallLight.enabled;
         Color baseColor = lightOn ? new Color(1f, 0.72f, 0.12f) : new Color(0.45f, 0.18f, 0.025f);
         Color emission = lightOn ? new Color(1.1f, 0.55f, 0.06f) : new Color(0.28f, 0.08f, 0.01f);
-        SetRendererColorAndEmission(lightControlRenderer, baseColor, emission);
+        if (powerOut)
+        {
+            baseColor = new Color(0.08f, 0.08f, 0.08f);
+            emission = Color.black;
+        }
+
+        SetRendererColorAndEmission(controlRenderer, baseColor, emission);
     }
 
     private static void SetRendererColorAndEmission(Renderer targetRenderer, Color baseColor, Color emission)
@@ -678,6 +738,66 @@ public sealed class NightShiftGameController : MonoBehaviour
         scaler.dynamicPixelsPerUnit = 10f;
     }
 
+    private void ApplyMenuOverlayMaterials(Transform menuRoot)
+    {
+        Material uiTemplate = Resources.Load<Material>("NSP_UIAlwaysOnTop");
+        if (uiTemplate != null)
+        {
+            Material uiOverlay = CreateRuntimeMaterial(uiTemplate, "NSP UI Always On Top (Runtime)");
+            Graphic[] graphics = menuRoot.GetComponentsInChildren<Graphic>(true);
+            foreach (Graphic graphic in graphics)
+            {
+                if (!(graphic is TextMeshProUGUI))
+                    graphic.material = uiOverlay;
+            }
+        }
+
+        Material textTemplate = Resources.Load<Material>("NSP_TMPAlwaysOnTop");
+        if (textTemplate == null || textTemplate.shader == null)
+            return;
+
+        TextMeshProUGUI[] labels = menuRoot.GetComponentsInChildren<TextMeshProUGUI>(true);
+        foreach (TextMeshProUGUI label in labels)
+        {
+            Material source = label.fontSharedMaterial;
+            if (source == null)
+                continue;
+
+            Material textOverlay = new Material(source)
+            {
+                name = label.name + " Overlay (Runtime)",
+                shader = textTemplate.shader,
+                renderQueue = 4000,
+                hideFlags = HideFlags.DontSave
+            };
+            runtimeOverlayMaterials.Add(textOverlay);
+            label.fontSharedMaterial = textOverlay;
+            label.UpdateMeshPadding();
+        }
+    }
+
+    private Material CreateRuntimeMaterial(Material template, string materialName)
+    {
+        Material material = new Material(template)
+        {
+            name = materialName,
+            renderQueue = 4000,
+            hideFlags = HideFlags.DontSave
+        };
+        runtimeOverlayMaterials.Add(material);
+        return material;
+    }
+
+    private void OnDestroy()
+    {
+        foreach (Material material in runtimeOverlayMaterials)
+        {
+            if (material != null)
+                Destroy(material);
+        }
+        runtimeOverlayMaterials.Clear();
+    }
+
     private static void MoveToCanvas(Component component, Transform parent)
     {
         if (component != null)
@@ -728,22 +848,16 @@ public sealed class NightShiftGameController : MonoBehaviour
     {
         state = NightState.Won;
         SetMonitorOpen(false);
-        ShowResult("6:00 AM", "You survived the shift.");
+        UpdateHud();
+        NightShiftSceneFlow.SetResult(true, "6:00 AM", "夜勤を生き延びました。");
+        StartCoroutine(LoadResultSceneAfterDelay());
     }
 
-    private void ShowResult(string title, string body)
+    private static IEnumerator LoadResultSceneAfterDelay()
     {
         Time.timeScale = 1f;
-        SetPanelActive(resultPanel, true);
-
-        if (resultPanel != null)
-            resultPanel.transform.SetAsLastSibling();
-
-        if (resultTitleText != null)
-            resultTitleText.text = title;
-
-        if (resultBodyText != null)
-            resultBodyText.text = body + "\n\n" + ConfirmLabel + ": Restart";
+        yield return new WaitForSecondsRealtime(0.75f);
+        SceneManager.LoadScene(NightShiftSceneFlow.ResultSceneName);
     }
 
     private void HandlePauseInput()
@@ -775,7 +889,9 @@ public sealed class NightShiftGameController : MonoBehaviour
 
     private void CycleCamera(int direction)
     {
-        int cameraCount = enemyStalker != null ? enemyStalker.CameraCount : CameraNames.Length;
+        int cameraCount = securityCameraSystem != null && securityCameraSystem.CameraCount > 0
+            ? securityCameraSystem.CameraCount
+            : enemyStalker != null ? enemyStalker.CameraCount : CameraNames.Length;
         if (cameraCount <= 0)
             return;
 
@@ -783,6 +899,10 @@ public sealed class NightShiftGameController : MonoBehaviour
         if (selectedCameraIndex < 0)
             selectedCameraIndex += cameraCount;
 
+        if (securityCameraSystem != null)
+            securityCameraSystem.SetFeed(monitorOpen, selectedCameraIndex);
+        if (audioController != null)
+            audioController.PlayCameraSwitch();
         UpdateHud();
     }
 
@@ -814,11 +934,15 @@ public sealed class NightShiftGameController : MonoBehaviour
             return;
 
         float drain = basePowerDrainPerSecond;
-        if (officeDoor != null && officeDoor.IsClosed)
+        if (leftDoor != null && leftDoor.IsClosed)
+            drain += doorPowerDrainPerSecond;
+        if (rightDoor != null && rightDoor.IsClosed)
             drain += doorPowerDrainPerSecond;
         if (monitorOpen)
             drain += monitorPowerDrainPerSecond;
-        if (officeLight != null && officeLight.enabled)
+        if (leftHallLight != null && leftHallLight.enabled)
+            drain += officeLightPowerDrainPerSecond;
+        if (rightHallLight != null && rightHallLight.enabled)
             drain += officeLightPowerDrainPerSecond;
 
         power = Mathf.Max(0f, power - drain * Time.deltaTime);
@@ -832,27 +956,32 @@ public sealed class NightShiftGameController : MonoBehaviour
         RenderSettings.ambientLight = new Color(0.012f, 0.012f, 0.016f);
         SetMonitorOpen(false);
 
-        if (officeDoor != null)
-        {
-            officeDoor.SetPowered(false);
-            officeDoor.ForceOpen();
-        }
+        PowerDownDoor(leftDoor);
+        PowerDownDoor(rightDoor);
 
-        if (officeLight != null)
-            officeLight.enabled = false;
+        SetHallLightEnabled(leftHallLight, false);
+        SetHallLightEnabled(rightHallLight, false);
 
         if (officeFillLight != null)
             officeFillLight.enabled = false;
 
-        UpdateLightControlVisual();
-
-        if (hallwayLight != null)
-            hallwayLight.color = Color.red;
+        UpdateLightControlVisuals();
 
         if (enemyStalker != null)
             enemyStalker.BeginPowerOutRush();
 
-        SetDanger("Power is out.");
+        if (audioController != null)
+            audioController.PlayPowerOut();
+        SetDanger("停電: ドアと照明が停止しました");
+    }
+
+    private static void PowerDownDoor(NightShiftOfficeDoor door)
+    {
+        if (door == null)
+            return;
+
+        door.SetPowered(false);
+        door.ForceOpen();
     }
 
     private void UpdateInteractionPrompt()
@@ -881,23 +1010,26 @@ public sealed class NightShiftGameController : MonoBehaviour
 
         if (powerText != null)
         {
-            string powerLabel = powerOut ? "POWER: OUT" : "POWER: " + Mathf.CeilToInt(power) + "%";
-            powerText.text = powerLabel + "\nUSAGE " + GetUsageMeter();
+            string powerLabel = powerOut ? "電力: 停止" : "電力: " + Mathf.CeilToInt(power) + "%";
+            powerText.text = powerLabel + "\n使用量 " + GetUsageMeter();
         }
 
         if (statusText != null)
         {
-            string door = IsDoorClosed ? "DOOR CLOSED" : "DOOR OPEN";
-            string light = officeLight != null && officeLight.enabled ? "LIGHT ON" : "LIGHT OFF";
-            statusText.text = door + " / " + light + "\n" + MonitorLabel + ": Monitor  " + PauseLabel + ": Pause";
+            string leftDoorStatus = IsDoorClosed(NightShiftAttackSide.Left) ? "左ドア 閉" : "左ドア 開";
+            string rightDoorStatus = IsDoorClosed(NightShiftAttackSide.Right) ? "右ドア 閉" : "右ドア 開";
+            string leftLightStatus = IsLightEnabled(leftHallLight) ? "左ライト 点灯" : "左ライト 消灯";
+            string rightLightStatus = IsLightEnabled(rightHallLight) ? "右ライト 点灯" : "右ライト 消灯";
+            statusText.text = leftDoorStatus + " / " + rightDoorStatus + "\n"
+                + leftLightStatus + " / " + rightLightStatus;
         }
 
         if (monitorFeedText != null)
         {
             string feed = enemyStalker != null
                 ? enemyStalker.GetCameraFeedText(selectedCameraIndex)
-                : GetCameraName(selectedCameraIndex) + "\nSIGNAL LOST";
-            monitorFeedText.text = feed + "\n\n" + CameraSwitchLabel + ": Change camera\n" + MonitorLabel + ": Lower monitor";
+                : GetCameraName(selectedCameraIndex) + "\n映像信号なし";
+            monitorFeedText.text = feed;
         }
 
         if (staticOverlay != null)
@@ -912,24 +1044,57 @@ public sealed class NightShiftGameController : MonoBehaviour
         if (open && powerOut)
             open = false;
 
-        if (open && officeLight != null)
+        if (open)
         {
-            officeLight.enabled = false;
-            UpdateLightControlVisual();
+            SetHallLightEnabled(leftHallLight, false);
+            SetHallLightEnabled(rightHallLight, false);
+            UpdateLightControlVisuals();
         }
 
+        bool changed = monitorOpen != open;
         monitorOpen = open;
         SetPanelActive(monitorPanel, monitorOpen);
+        if (securityCameraSystem != null)
+            securityCameraSystem.SetFeed(monitorOpen, selectedCameraIndex);
+        if (changed && audioController != null)
+            audioController.PlayMonitor();
         UpdateHud();
     }
 
-    private void ToggleOfficeLight()
+    private void ToggleDoor(NightShiftOfficeDoor door)
     {
-        if (officeLight == null || powerOut)
+        if (door == null || powerOut)
             return;
 
-        officeLight.enabled = !officeLight.enabled;
-        UpdateLightControlVisual();
+        bool closed = !door.IsClosed;
+        door.SetClosed(closed);
+        if (audioController != null)
+            audioController.PlayDoor(closed);
+    }
+
+    private void ToggleHallLight(Light hallLight)
+    {
+        if (hallLight == null || powerOut)
+            return;
+
+        SetHallLightEnabled(hallLight, !hallLight.enabled);
+        UpdateLightControlVisuals();
+        if (audioController != null)
+            audioController.PlaySwitch();
+    }
+
+    private static void SetHallLightEnabled(Light hallLight, bool enabled)
+    {
+        if (hallLight == null)
+            return;
+
+        hallLight.enabled = enabled;
+        hallLight.intensity = enabled ? 2.1f : 0f;
+    }
+
+    private static bool IsLightEnabled(Light hallLight)
+    {
+        return hallLight != null && hallLight.enabled;
     }
 
     private void ResetNightObjects()
@@ -940,35 +1105,28 @@ public sealed class NightShiftGameController : MonoBehaviour
         selectedCameraIndex = 0;
         SetMonitorOpen(false);
 
-        if (officeDoor != null)
-        {
-            officeDoor.SetPowered(true);
-            officeDoor.SetClosed(false);
-        }
+        ResetDoor(leftDoor);
+        ResetDoor(rightDoor);
 
-        if (officeLight != null)
-            officeLight.enabled = false;
+        SetHallLightEnabled(leftHallLight, false);
+        SetHallLightEnabled(rightHallLight, false);
 
         if (officeFillLight != null)
             officeFillLight.enabled = true;
 
-        UpdateLightControlVisual();
-
-        if (hallwayLight != null)
-        {
-            hallwayLight.enabled = true;
-            hallwayLight.color = new Color(0.7f, 0.04f, 0.03f);
-            hallwayLight.intensity = 0.65f;
-        }
+        UpdateLightControlVisuals();
 
         if (enemyStalker != null)
             enemyStalker.ResetForNight();
     }
 
-    private void RestartScene()
+    private static void ResetDoor(NightShiftOfficeDoor door)
     {
-        Time.timeScale = 1f;
-        SceneManager.LoadScene(SceneManager.GetActiveScene().name);
+        if (door == null)
+            return;
+
+        door.SetPowered(true);
+        door.SetClosed(false);
     }
 
     private Transform GetInteractionRayOrigin()
@@ -984,15 +1142,15 @@ public sealed class NightShiftGameController : MonoBehaviour
 
     private bool IsDesktopFallback => vrRig != null && vrRig.IsUsingDesktopInputFallback;
 
-    private string InteractLabel => IsDesktopFallback ? "Left click / Enter" : "Right trigger";
+    private string InteractLabel => IsDesktopFallback ? "左クリック / Enter" : "右トリガー";
 
-    private string ConfirmLabel => IsDesktopFallback ? "Left click / Enter / Space" : "Right trigger";
+    private string ConfirmLabel => IsDesktopFallback ? "左クリック / Enter / Space" : "右トリガー";
 
-    private string MonitorLabel => IsDesktopFallback ? "Tab / M" : "Left primary";
+    private string MonitorLabel => IsDesktopFallback ? "Tab / M" : "左コントローラー A/X";
 
-    private string CameraSwitchLabel => IsDesktopFallback ? "Q/E or arrows" : "Right stick";
+    private string CameraSwitchLabel => IsDesktopFallback ? "Q/E または矢印" : "右スティック左右";
 
-    private string PauseLabel => IsDesktopFallback ? "Esc" : "Menu";
+    private string PauseLabel => IsDesktopFallback ? "Esc" : "メニューボタン";
 
     private int GetCurrentHourIndex()
     {
@@ -1015,11 +1173,15 @@ public sealed class NightShiftGameController : MonoBehaviour
             return 0;
 
         int usage = 1;
-        if (IsDoorClosed)
+        if (IsDoorClosed(NightShiftAttackSide.Left))
+            usage++;
+        if (IsDoorClosed(NightShiftAttackSide.Right))
             usage++;
         if (monitorOpen)
             usage++;
-        if (officeLight != null && officeLight.enabled)
+        if (IsLightEnabled(leftHallLight))
+            usage++;
+        if (IsLightEnabled(rightHallLight))
             usage++;
         return usage;
     }
@@ -1027,13 +1189,13 @@ public sealed class NightShiftGameController : MonoBehaviour
     private string GetUsageMeter()
     {
         int usage = GetUsageLevel();
-        return "[" + new string('|', usage) + new string('.', 4 - usage) + "]";
+        return "[" + new string('|', usage) + new string('.', Mathf.Max(0, 6 - usage)) + "]";
     }
 
     private static string GetCameraName(int cameraIndex)
     {
         if (cameraIndex < 0 || cameraIndex >= CameraNames.Length)
-            return "CAM -- / OFFLINE";
+            return "CAM -- / オフライン";
 
         return CameraNames[cameraIndex];
     }
