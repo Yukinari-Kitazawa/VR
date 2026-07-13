@@ -17,23 +17,23 @@ public static class NightShiftSceneGenerator
     {
         EnsureFolder("Assets/Script/NightShiftPrototype/GeneratedMaterials");
 
-        Material wallMaterial = CreateMaterial("NSP_Wall", new Color(0.055f, 0.052f, 0.058f));
-        Material floorMaterial = CreateMaterial("NSP_Floor", new Color(0.032f, 0.032f, 0.036f));
-        Material metalMaterial = CreateMaterial("NSP_DarkMetal", new Color(0.12f, 0.12f, 0.13f));
-        Material deskMaterial = CreateMaterial("NSP_Desk", new Color(0.08f, 0.065f, 0.045f));
+        Material wallMaterial = CreateMaterial("NSP_Wall", new Color(0.105f, 0.1f, 0.12f));
+        Material floorMaterial = CreateMaterial("NSP_Floor", new Color(0.06f, 0.06f, 0.072f));
+        Material metalMaterial = CreateMaterial("NSP_DarkMetal", new Color(0.18f, 0.19f, 0.22f));
+        Material deskMaterial = CreateMaterial("NSP_Desk", new Color(0.13f, 0.105f, 0.075f));
         Material monitorMaterial = CreateMaterial("NSP_MonitorGlow", new Color(0.02f, 0.42f, 0.25f), 0f, 0.35f, new Color(0.01f, 0.35f, 0.18f));
-        Material redMaterial = CreateMaterial("NSP_RedIndicator", new Color(0.85f, 0.04f, 0.025f), 0f, 0.25f, new Color(0.8f, 0f, 0f));
+        Material redMaterial = CreateMaterial("NSP_RedIndicator", new Color(0.85f, 0.04f, 0.025f), 0f, 0.25f, new Color(0.5f, 0.02f, 0.01f));
         Material eyeMaterial = CreateMaterial("NSP_Eyes", new Color(1f, 0.03f, 0.02f), 0f, 0.6f, new Color(1.4f, 0f, 0f));
         Material enemyMaterial = CreateMaterial("NSP_Enemy", new Color(0.025f, 0.025f, 0.028f));
 
         Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
         RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
-        RenderSettings.ambientLight = new Color(0.015f, 0.015f, 0.018f);
+        RenderSettings.ambientLight = new Color(0.05f, 0.048f, 0.055f);
         RenderSettings.fog = true;
         RenderSettings.fogMode = FogMode.ExponentialSquared;
         RenderSettings.fogColor = Color.black;
-        RenderSettings.fogDensity = 0.045f;
+        RenderSettings.fogDensity = 0.02f;
 
         GameObject root = new GameObject("Night Shift Prototype");
         NightShiftGameController gameController = root.AddComponent<NightShiftGameController>();
@@ -113,21 +113,33 @@ public static class NightShiftSceneGenerator
         door = doorRoot.AddComponent<NightShiftOfficeDoor>();
         Transform doorSlab = CreateCube("Door Slab", doorRoot.transform, new Vector3(0f, 3.35f, 0f), new Vector3(2.15f, 2.6f, 0.24f), metalMaterial).transform;
 
-        GameObject doorButton = CreateCube("Door Control", parent, new Vector3(-2.65f, 1.25f, -2.9f), new Vector3(0.35f, 0.55f, 0.16f), redMaterial);
+        GameObject doorButton = CreateCube("Door Control", parent, new Vector3(1.15f, 1.45f, 1.35f), new Vector3(0.42f, 0.62f, 0.2f), redMaterial);
+        doorButton.transform.rotation = Quaternion.Euler(0f, 90f, 0f);
         doorButton.AddComponent<NightShiftInteractable>().Configure(controller, NightShiftInteractionAction.ToggleDoor, "Toggle door");
 
-        GameObject lightButton = CreateCube("Light Control", parent, new Vector3(2.65f, 1.25f, -2.9f), new Vector3(0.35f, 0.55f, 0.16f), redMaterial);
+        GameObject lightButton = CreateCube("Light Control", parent, new Vector3(1.15f, 1.45f, 0.78f), new Vector3(0.42f, 0.62f, 0.2f), redMaterial);
+        lightButton.transform.rotation = Quaternion.Euler(0f, 90f, 0f);
         lightButton.AddComponent<NightShiftInteractable>().Configure(controller, NightShiftInteractionAction.ToggleOfficeLight, "Toggle light");
 
         GameObject doorLamp = new GameObject("Door Indicator Light");
         doorLamp.transform.SetParent(parent);
-        doorLamp.transform.position = new Vector3(-2.65f, 1.65f, -2.7f);
+        doorLamp.transform.position = new Vector3(1.05f, 1.85f, 1.35f);
         Light doorWarning = doorLamp.AddComponent<Light>();
         doorWarning.type = LightType.Point;
-        doorWarning.range = 3f;
-        doorWarning.intensity = 1.4f;
+        doorWarning.range = 1.5f;
+        doorWarning.intensity = 0.45f;
         doorWarning.color = Color.green;
         door.Configure(doorSlab, doorButton.GetComponent<Renderer>(), doorWarning);
+
+        GameObject fillLightObject = new GameObject("Office Fill Light");
+        fillLightObject.transform.SetParent(parent);
+        fillLightObject.transform.position = new Vector3(0f, 2.4f, 0.95f);
+        Light fillLight = fillLightObject.AddComponent<Light>();
+        fillLight.type = LightType.Point;
+        fillLight.range = 8f;
+        fillLight.intensity = 0.85f;
+        fillLight.color = new Color(0.84f, 0.86f, 0.9f);
+        fillLight.shadows = LightShadows.None;
 
         GameObject officeLightObject = new GameObject("Office Light");
         officeLightObject.transform.SetParent(parent);
@@ -135,19 +147,19 @@ public static class NightShiftSceneGenerator
         officeLight = officeLightObject.AddComponent<Light>();
         officeLight.type = LightType.Point;
         officeLight.range = 7f;
-        officeLight.intensity = 1.05f;
-        officeLight.color = new Color(0.85f, 0.78f, 0.65f);
-        officeLight.shadows = LightShadows.Soft;
+        officeLight.intensity = 1.7f;
+        officeLight.color = new Color(1f, 0.82f, 0.58f);
+        officeLight.shadows = LightShadows.None;
 
         GameObject hallLightObject = new GameObject("Hall Warning Light");
         hallLightObject.transform.SetParent(parent);
         hallLightObject.transform.position = new Vector3(0f, 2.35f, -8.8f);
         hallwayLight = hallLightObject.AddComponent<Light>();
         hallwayLight.type = LightType.Point;
-        hallwayLight.range = 9f;
-        hallwayLight.intensity = 1.3f;
+        hallwayLight.range = 7f;
+        hallwayLight.intensity = 0.65f;
         hallwayLight.color = new Color(0.7f, 0.04f, 0.03f);
-        hallwayLight.shadows = LightShadows.Soft;
+        hallwayLight.shadows = LightShadows.None;
     }
 
     private static void BuildPlayer(Transform parent, NightShiftGameController controller, out Camera playerCamera, out NightShiftVRRigController vrRig, out Transform interactionRayOrigin)
@@ -186,19 +198,17 @@ public static class NightShiftSceneGenerator
         leftHand.transform.SetParent(trackingSpace.transform);
         leftHand.transform.localPosition = new Vector3(-0.25f, 1.25f, 0.35f);
         leftHand.transform.localRotation = Quaternion.identity;
-        CreateControllerMarker("Left Controller Marker", leftHand.transform, new Color(0.05f, 0.35f, 0.8f));
 
         GameObject rightHand = new GameObject("Right Controller Anchor");
         rightHand.transform.SetParent(trackingSpace.transform);
         rightHand.transform.localPosition = new Vector3(0.25f, 1.25f, 0.35f);
         rightHand.transform.localRotation = Quaternion.identity;
-        CreateControllerMarker("Right Controller Marker", rightHand.transform, new Color(0.8f, 0.08f, 0.04f));
         LineRenderer pointerLine = rightHand.AddComponent<LineRenderer>();
         pointerLine.useWorldSpace = true;
-        pointerLine.widthMultiplier = 0.012f;
+        pointerLine.widthMultiplier = 0.003f;
         pointerLine.positionCount = 2;
-        pointerLine.startColor = new Color(1f, 0.08f, 0.05f, 0.9f);
-        pointerLine.endColor = new Color(1f, 0.08f, 0.05f, 0.05f);
+        pointerLine.startColor = new Color(0.65f, 0.9f, 1f, 0.7f);
+        pointerLine.endColor = new Color(0.35f, 0.7f, 1f, 0.18f);
         Shader lineShader = Shader.Find("Universal Render Pipeline/Unlit");
         if (lineShader == null)
             lineShader = Shader.Find("Sprites/Default");
@@ -272,22 +282,22 @@ public static class NightShiftSceneGenerator
 
     private static void BuildUi(Transform monitorUiAnchor, Camera playerCamera, out TextMeshProUGUI timerText, out TextMeshProUGUI powerText, out TextMeshProUGUI statusText, out TextMeshProUGUI promptText, out TextMeshProUGUI dangerText, out TextMeshProUGUI monitorFeedText, out TextMeshProUGUI resultTitleText, out TextMeshProUGUI resultBodyText, out GameObject titlePanel, out GameObject pausePanel, out GameObject resultPanel, out GameObject monitorPanel, out GameObject jumpscarePanel, out Image staticOverlay)
     {
-        GameObject menuCanvasObject = CreateWorldCanvas("Menu UI Canvas", playerCamera.transform, playerCamera, new Vector3(0f, -0.04f, 2.35f), Quaternion.identity, Vector3.one * 0.0018f, new Vector2(1600f, 900f));
+        GameObject menuCanvasObject = CreateScreenSpaceOverlayCanvas("Menu UI Canvas", playerCamera);
         GameObject monitorCanvasObject = CreateWorldCanvas("Monitor Camera Canvas", monitorUiAnchor, playerCamera, Vector3.zero, Quaternion.Euler(0f, 180f, 0f), Vector3.one * 0.0009f, new Vector2(1200f, 680f));
         Transform menuRoot = menuCanvasObject.transform;
         Transform monitorRoot = monitorCanvasObject.transform;
 
-        timerText = CreateText("Timer", menuRoot, "05:00", 42f, TextAlignmentOptions.TopLeft, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(28f, -22f), new Vector2(260f, 80f), Color.white);
-        powerText = CreateText("Power", menuRoot, "POWER: 100%", 34f, TextAlignmentOptions.TopRight, new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-28f, -26f), new Vector2(340f, 70f), Color.white);
-        statusText = CreateText("Status", menuRoot, "", 25f, TextAlignmentOptions.BottomLeft, new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(28f, 28f), new Vector2(620f, 110f), new Color(0.82f, 0.95f, 0.86f));
-        promptText = CreateText("Interaction Prompt", menuRoot, "", 26f, TextAlignmentOptions.Center, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 92f), new Vector2(720f, 50f), Color.white);
-        dangerText = CreateText("Danger", menuRoot, "", 32f, TextAlignmentOptions.Center, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -100f), new Vector2(860f, 70f), new Color(1f, 0.15f, 0.12f));
+        timerText = CreateText("Timer", menuRoot, "12 AM", 42f, TextAlignmentOptions.TopLeft, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(100f, -70f), new Vector2(300f, 90f), Color.white);
+        powerText = CreateText("Power", menuRoot, "POWER: 100%\nUSAGE [|...]", 34f, TextAlignmentOptions.TopRight, new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-100f, -70f), new Vector2(440f, 120f), Color.white);
+        statusText = CreateText("Status", menuRoot, "", 25f, TextAlignmentOptions.BottomLeft, new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(100f, 90f), new Vector2(700f, 120f), new Color(0.82f, 0.95f, 0.86f));
+        promptText = CreateText("Interaction Prompt", menuRoot, "", 26f, TextAlignmentOptions.Center, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 150f), new Vector2(800f, 60f), Color.white);
+        dangerText = CreateText("Danger", menuRoot, "", 32f, TextAlignmentOptions.Center, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -145f), new Vector2(900f, 80f), new Color(1f, 0.15f, 0.12f));
         dangerText.gameObject.SetActive(false);
         CreateText("Reticle", menuRoot, "+", 30f, TextAlignmentOptions.Center, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(40f, 40f), new Color(1f, 1f, 1f, 0.55f));
 
         titlePanel = CreatePanel("Title Panel", menuRoot, new Color(0f, 0f, 0f, 0.96f));
         CreateText("Title", titlePanel.transform, "NIGHT SHIFT\nPROTOTYPE", 76f, TextAlignmentOptions.Center, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 110f), new Vector2(900f, 220f), Color.white);
-        CreateText("Title Body", titlePanel.transform, "Survive until the timer ends.\nRight trigger / Left click: Start", 32f, TextAlignmentOptions.Center, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, -120f), new Vector2(900f, 140f), new Color(0.75f, 0.9f, 0.78f));
+        CreateText("Title Body", titlePanel.transform, "Survive from 12 AM to 6 AM.\nTrigger / Click: Start\nMonitor: Select cameras and track the subject", 30f, TextAlignmentOptions.Center, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, -120f), new Vector2(1250f, 220f), new Color(0.75f, 0.9f, 0.78f));
 
         pausePanel = CreatePanel("Pause Panel", menuRoot, new Color(0f, 0f, 0f, 0.78f));
         CreateText("Pause Title", pausePanel.transform, "PAUSED", 72f, TextAlignmentOptions.Center, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 45f), new Vector2(680f, 110f), Color.white);
@@ -300,7 +310,7 @@ public static class NightShiftSceneGenerator
         resultPanel.SetActive(false);
 
         monitorPanel = CreatePanel("Monitor Panel", monitorRoot, new Color(0.005f, 0.02f, 0.012f, 0.95f));
-        monitorFeedText = CreateText("Monitor Feed", monitorPanel.transform, "", 72f, TextAlignmentOptions.Center, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(1060f, 520f), new Color(0.58f, 1f, 0.66f));
+        monitorFeedText = CreateText("Monitor Feed", monitorPanel.transform, "", 64f, TextAlignmentOptions.Center, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(1120f, 560f), new Color(0.58f, 1f, 0.66f));
         GameObject staticObject = new GameObject("Static");
         staticObject.transform.SetParent(monitorPanel.transform, false);
         staticOverlay = staticObject.AddComponent<Image>();
@@ -336,6 +346,25 @@ public static class NightShiftSceneGenerator
         return canvasObject;
     }
 
+    private static GameObject CreateScreenSpaceOverlayCanvas(string name, Camera worldCamera)
+    {
+        GameObject canvasObject = new GameObject(name, typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
+        canvasObject.transform.SetParent(worldCamera.transform.root, false);
+
+        Canvas canvas = canvasObject.GetComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        canvas.worldCamera = null;
+        canvas.overrideSorting = true;
+        canvas.sortingOrder = 100;
+
+        CanvasScaler scaler = canvasObject.GetComponent<CanvasScaler>();
+        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+        scaler.referenceResolution = new Vector2(1600f, 900f);
+        scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
+        scaler.matchWidthOrHeight = 0.5f;
+        return canvasObject;
+    }
+
     private static GameObject CreateCube(string name, Transform parent, Vector3 localPosition, Vector3 localScale, Material material)
     {
         GameObject cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
@@ -350,30 +379,6 @@ public static class NightShiftSceneGenerator
             renderer.sharedMaterial = material;
 
         return cube;
-    }
-
-    private static void CreateControllerMarker(string name, Transform parent, Color color)
-    {
-        GameObject marker = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        marker.name = name;
-        marker.transform.SetParent(parent);
-        marker.transform.localPosition = Vector3.zero;
-        marker.transform.localRotation = Quaternion.identity;
-        marker.transform.localScale = Vector3.one * 0.12f;
-
-        Renderer renderer = marker.GetComponent<Renderer>();
-        if (renderer != null)
-        {
-            Shader shader = Shader.Find("Universal Render Pipeline/Lit");
-            if (shader == null)
-                shader = Shader.Find("Standard");
-
-            Material markerMaterial = new Material(shader);
-            SetMaterialColor(markerMaterial, color);
-            renderer.sharedMaterial = markerMaterial;
-        }
-
-        Object.DestroyImmediate(marker.GetComponent<Collider>());
     }
 
     private static Transform CreateWaypoint(Transform parent, string name, Vector3 position)
@@ -394,7 +399,7 @@ public static class NightShiftSceneGenerator
         label.color = color;
         label.alignment = alignment;
         label.raycastTarget = false;
-        label.enableWordWrapping = true;
+        label.textWrappingMode = TextWrappingModes.Normal;
 
         RectTransform rect = label.GetComponent<RectTransform>();
         rect.anchorMin = anchorMin;

@@ -2,22 +2,35 @@ using UnityEngine;
 
 public sealed class NightShiftEnemyStalker : MonoBehaviour
 {
+    [SerializeField] private NightShiftGameController gameController;
     [SerializeField] private Transform[] waypoints;
-    [SerializeField] private float baseMoveInterval = 20f;
-    [SerializeField] private float intervalJitter = 5f;
+    [SerializeField] private Vector2 moveCheckIntervalSeconds = new Vector2(5f, 8f);
+    [SerializeField, Range(0f, 1f)] private float baseAdvanceChance = 0.18f;
+    [SerializeField, Range(0f, 0.25f)] private float hourlyAdvanceChanceBonus = 0.07f;
+    [SerializeField, Range(0f, 1f)] private float observedChanceMultiplier = 0.12f;
+    [SerializeField, Min(1)] private int maximumFailedMoveChecks = 5;
     [SerializeField] private float doorAttackDelay = 4.5f;
+    [SerializeField] private Vector2 powerOutRushDelaySeconds = new Vector2(6f, 11f);
     [SerializeField] private float visualMoveSpeed = 2.2f;
 
-    private NightShiftGameController gameController;
     private int stageIndex;
-    private float moveTimer;
-    private float nextMoveDelay;
+    private int failedMoveChecks;
+    private float moveCheckTimer;
     private float attackTimer;
+    private float powerOutRushTimer;
     private bool isAttackingDoor;
-    private bool rushMode;
+    private bool powerOutRush;
 
     public int StageIndex => stageIndex;
-    public bool IsAtDoor => waypoints != null && waypoints.Length > 0 && stageIndex >= waypoints.Length - 1;
+    public int CameraCount => waypoints != null ? waypoints.Length : 0;
+    public bool IsAtDoor => CameraCount > 0 && stageIndex >= CameraCount - 1;
+
+    private void Awake()
+    {
+        NormalizeTuning();
+        if (gameController == null)
+            gameController = GetComponentInParent<NightShiftGameController>();
+    }
 
     public void Configure(NightShiftGameController controller, Transform[] route)
     {
@@ -37,78 +50,90 @@ public sealed class NightShiftEnemyStalker : MonoBehaviour
 
         UpdateVisualPosition();
 
+        if (powerOutRush)
+        {
+            UpdatePowerOutRush();
+            return;
+        }
+
         if (isAttackingDoor)
         {
             UpdateDoorAttack();
             return;
         }
 
-        float monitorSlow = gameController.IsMonitorOpen ? 0.55f : 1f;
-        float rushMultiplier = rushMode ? 4.5f : 1f;
-        moveTimer += Time.deltaTime * monitorSlow * rushMultiplier;
+        moveCheckTimer -= Time.deltaTime;
+        if (moveCheckTimer > 0f)
+            return;
 
-        if (moveTimer >= nextMoveDelay)
-            AdvanceStage();
+        EvaluateMoveOpportunity();
+        ScheduleNextMoveCheck();
     }
 
     public void ResetForNight()
     {
         stageIndex = 0;
-        moveTimer = 0f;
         isAttackingDoor = false;
-        rushMode = false;
-        ScheduleNextMove();
+        powerOutRush = false;
+        attackTimer = 0f;
+        powerOutRushTimer = 0f;
+        failedMoveChecks = 0;
+        ScheduleNextMoveCheck();
 
-        if (waypoints != null && waypoints.Length > 0)
+        if (CameraCount > 0)
             transform.position = waypoints[0].position;
     }
 
     public void BeginPowerOutRush()
     {
-        rushMode = true;
-        if (waypoints == null || waypoints.Length == 0)
-            return;
-
-        stageIndex = Mathf.Max(stageIndex, Mathf.Max(0, waypoints.Length - 2));
-        moveTimer = 0f;
-        nextMoveDelay = 2f;
+        powerOutRush = true;
+        isAttackingDoor = false;
+        float minimum = Mathf.Min(powerOutRushDelaySeconds.x, powerOutRushDelaySeconds.y);
+        float maximum = Mathf.Max(powerOutRushDelaySeconds.x, powerOutRushDelaySeconds.y);
+        powerOutRushTimer = Random.Range(minimum, maximum);
     }
 
-    public string GetFeedText()
+    public string GetCameraFeedText(int cameraIndex)
     {
-        if (waypoints == null || waypoints.Length == 0)
-            return "CAM OFFLINE";
+        if (CameraCount == 0)
+            return "CAM -- / OFFLINE\nSIGNAL LOST";
 
-        if (IsAtDoor)
-            return "CAM 01 / OFFICE DOOR\nSignal: unstable\nThe figure is outside.";
+        cameraIndex = Mathf.Clamp(cameraIndex, 0, CameraCount - 1);
+        string cameraName = GetCameraName(cameraIndex);
+        bool subjectVisible = !powerOutRush && stageIndex == cameraIndex;
 
-        if (stageIndex >= waypoints.Length - 2)
-            return "CAM 02 / MAIN HALL\nSignal: noisy\nMovement close to the office.";
+        string subjectStatus;
+        if (subjectVisible && isAttackingDoor)
+            subjectStatus = "SUBJECT AT OFFICE ENTRANCE";
+        else if (subjectVisible)
+            subjectStatus = "SUBJECT DETECTED";
+        else
+            subjectStatus = "NO MOTION DETECTED";
 
-        if (stageIndex >= 1)
-            return "CAM 03 / BACK HALL\nSignal: noisy\nA silhouette is visible.";
-
-        return "CAM 04 / STORAGE\nSignal: weak\nNo motion detected.";
+        return cameraName + "\n" + subjectStatus + "\n" + BuildCameraMap(cameraIndex);
     }
 
-    private void AdvanceStage()
+    private void EvaluateMoveOpportunity()
     {
-        if (waypoints == null || waypoints.Length == 0)
+        if (CameraCount == 0 || IsAtDoor)
             return;
 
-        stageIndex = Mathf.Min(stageIndex + 1, waypoints.Length - 1);
-        moveTimer = 0f;
+        float advanceChance = baseAdvanceChance + gameController.CurrentHourIndex * hourlyAdvanceChanceBonus;
+        if (gameController.IsCameraWatching(stageIndex))
+            advanceChance *= observedChanceMultiplier;
 
+        failedMoveChecks++;
+        bool forceAdvance = failedMoveChecks >= maximumFailedMoveChecks;
+        if (!forceAdvance && Random.value > Mathf.Clamp01(advanceChance))
+            return;
+
+        failedMoveChecks = 0;
+        stageIndex = Mathf.Min(stageIndex + 1, CameraCount - 1);
         if (IsAtDoor)
         {
             isAttackingDoor = true;
             attackTimer = doorAttackDelay;
-            gameController.SetDanger("Door contact detected.");
-        }
-        else
-        {
-            gameController.ClearDanger();
-            ScheduleNextMove();
+            gameController.SetDanger("Movement detected at the office entrance.");
         }
     }
 
@@ -120,10 +145,10 @@ public sealed class NightShiftEnemyStalker : MonoBehaviour
 
         if (gameController.IsDoorClosed)
         {
-            stageIndex = Mathf.Max(1, waypoints.Length / 2);
+            stageIndex = Mathf.Max(1, CameraCount - 3);
             isAttackingDoor = false;
-            moveTimer = 0f;
-            ScheduleNextMove();
+            failedMoveChecks = 0;
+            ScheduleNextMoveCheck();
             gameController.BlockEnemyAtDoor();
             return;
         }
@@ -131,18 +156,70 @@ public sealed class NightShiftEnemyStalker : MonoBehaviour
         gameController.LoseNight("The figure entered the office.");
     }
 
-    private void ScheduleNextMove()
+    private void UpdatePowerOutRush()
     {
-        float jitter = Random.Range(-intervalJitter, intervalJitter);
-        nextMoveDelay = Mathf.Max(5f, baseMoveInterval + jitter);
+        powerOutRushTimer -= Time.deltaTime;
+        if (powerOutRushTimer > 0f)
+            return;
+
+        powerOutRush = false;
+        stageIndex = Mathf.Max(0, CameraCount - 1);
+        isAttackingDoor = true;
+        attackTimer = Random.Range(2f, 4f);
+    }
+
+    private void ScheduleNextMoveCheck()
+    {
+        float minimum = Mathf.Max(1f, Mathf.Min(moveCheckIntervalSeconds.x, moveCheckIntervalSeconds.y));
+        float maximum = Mathf.Max(minimum, Mathf.Max(moveCheckIntervalSeconds.x, moveCheckIntervalSeconds.y));
+        moveCheckTimer = Random.Range(minimum, maximum);
+    }
+
+    private void NormalizeTuning()
+    {
+        if (moveCheckIntervalSeconds.x <= 0f || moveCheckIntervalSeconds.y <= 0f)
+            moveCheckIntervalSeconds = new Vector2(5f, 8f);
+        if (baseAdvanceChance <= 0f)
+            baseAdvanceChance = 0.18f;
+        if (hourlyAdvanceChanceBonus <= 0f)
+            hourlyAdvanceChanceBonus = 0.07f;
+        if (observedChanceMultiplier <= 0f)
+            observedChanceMultiplier = 0.12f;
+        if (maximumFailedMoveChecks <= 0)
+            maximumFailedMoveChecks = 5;
+        if (powerOutRushDelaySeconds.x <= 0f || powerOutRushDelaySeconds.y <= 0f)
+            powerOutRushDelaySeconds = new Vector2(6f, 11f);
+    }
+
+    private string GetCameraName(int cameraIndex)
+    {
+        string location = waypoints[cameraIndex] != null ? waypoints[cameraIndex].name.ToUpperInvariant() : "OFFLINE";
+        int cameraNumber = CameraCount - cameraIndex;
+        return "CAM " + cameraNumber.ToString("00") + " / " + location;
+    }
+
+    private string BuildCameraMap(int selectedCamera)
+    {
+        string map = "";
+        for (int i = 0; i < CameraCount; i++)
+        {
+            if (i > 0)
+                map += "-";
+
+            int cameraNumber = CameraCount - i;
+            string marker = cameraNumber.ToString("00");
+            map += i == selectedCamera ? "[>" + marker + "<]" : "[" + marker + "]";
+        }
+
+        return map + ">OFFICE";
     }
 
     private void UpdateVisualPosition()
     {
-        if (waypoints == null || waypoints.Length == 0)
+        if (CameraCount == 0)
             return;
 
-        Vector3 target = waypoints[Mathf.Clamp(stageIndex, 0, waypoints.Length - 1)].position;
+        Vector3 target = waypoints[Mathf.Clamp(stageIndex, 0, CameraCount - 1)].position;
         transform.position = Vector3.Lerp(transform.position, target, Time.deltaTime * visualMoveSpeed);
     }
 }

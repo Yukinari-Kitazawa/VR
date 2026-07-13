@@ -63,12 +63,25 @@ public sealed class NightShiftOfficeDoor : MonoBehaviour
         Color color = hasPower ? (IsClosed ? closedColor : openColor) : offlineColor;
 
         if (indicatorRenderer != null)
-            indicatorRenderer.material.color = color;
+        {
+            Material material = indicatorRenderer.material;
+            if (material.HasProperty("_BaseColor"))
+                material.SetColor("_BaseColor", color);
+            if (material.HasProperty("_Color"))
+                material.SetColor("_Color", color);
+            if (material.HasProperty("_EmissionColor"))
+            {
+                material.EnableKeyword("_EMISSION");
+                material.SetColor("_EmissionColor", hasPower ? color * 1.2f : Color.black);
+            }
+        }
 
         if (warningLight != null)
         {
             warningLight.enabled = hasPower;
             warningLight.color = color;
+            warningLight.range = 1.5f;
+            warningLight.intensity = IsClosed ? 0.65f : 0.45f;
         }
     }
 }

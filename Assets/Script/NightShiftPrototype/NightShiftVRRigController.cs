@@ -16,6 +16,8 @@ public sealed class NightShiftVRRigController : MonoBehaviour
     [SerializeField] private LineRenderer pointerLine;
     [SerializeField] private float turnSpeed = 70f;
     [SerializeField] private float deadzone = 0.18f;
+    [SerializeField] private float cameraSwitchDeadzone = 0.65f;
+    [SerializeField, Min(1f)] private float seatedEyeHeight = 1.62f;
     [SerializeField] private float pointerLength = 4f;
     [SerializeField] private bool desktopFallbackEnabled = true;
     [SerializeField] private float desktopMouseSensitivity = 0.08f;
@@ -29,7 +31,12 @@ public sealed class NightShiftVRRigController : MonoBehaviour
     private bool previousLeftPrimary;
     private bool previousRightPrimary;
     private bool previousMenu;
+    private bool previousCameraPrevious;
+    private bool previousCameraNext;
     private float desktopPitch;
+    private bool trackingOriginCalibrated;
+    private Vector3 initialHeadTrackingPosition;
+    private Quaternion trackingYawCorrection = Quaternion.identity;
 
     public Transform InteractionRayOrigin => rightDevice.isValid && rightHand != null ? rightHand : head;
     public bool IsUsingDesktopFallback => desktopFallbackEnabled && !headDevice.isValid;
@@ -38,6 +45,7 @@ public sealed class NightShiftVRRigController : MonoBehaviour
     public bool MonitorPressedThisFrame { get; private set; }
     public bool PausePressedThisFrame { get; private set; }
     public bool ConfirmPressedThisFrame { get; private set; }
+    public int CameraSwitchDirectionThisFrame { get; private set; }
 
     public void Configure(NightShiftGameController controller, Transform headTransform, Transform leftHandTransform, Transform rightHandTransform, LineRenderer rayLine = null)
     {
@@ -48,9 +56,26 @@ public sealed class NightShiftVRRigController : MonoBehaviour
         pointerLine = rayLine;
     }
 
+    public void SetFixedPose(Vector3 position, Quaternion rotation)
+    {
+        transform.SetPositionAndRotation(position, rotation);
+    }
+
+    public void RecenterTrackingOrigin()
+    {
+        trackingOriginCalibrated = false;
+        trackingYawCorrection = Quaternion.identity;
+    }
+
     private void Awake()
     {
         characterController = GetComponent<CharacterController>();
+    }
+
+    private void Start()
+    {
+        HideDebugControllerMarker(leftHand, "Left Controller Marker");
+        HideDebugControllerMarker(rightHand, "Right Controller Marker");
     }
 
     private void OnEnable()
@@ -77,9 +102,7 @@ public sealed class NightShiftVRRigController : MonoBehaviour
         }
         else
         {
-            UpdateTrackedPose(headDevice, head);
-            UpdateTrackedPose(leftDevice, leftHand);
-            UpdateTrackedPose(rightDevice, rightHand);
+            UpdateVrTrackedPoses();
         }
 
         if (UseDesktopInputFallback)
@@ -106,16 +129,22 @@ public sealed class NightShiftVRRigController : MonoBehaviour
         bool leftPrimary = ReadButton(leftDevice, CommonUsages.primaryButton);
         bool rightPrimary = ReadButton(rightDevice, CommonUsages.primaryButton);
         bool menu = ReadButton(leftDevice, CommonUsages.menuButton) || ReadButton(rightDevice, CommonUsages.menuButton);
+        Vector2 rightStick = ReadVector2(rightDevice, CommonUsages.primary2DAxis);
+        bool cameraPrevious = rightStick.x < -cameraSwitchDeadzone;
+        bool cameraNext = rightStick.x > cameraSwitchDeadzone;
 
         InteractPressedThisFrame = rightTrigger && !previousRightTrigger;
         MonitorPressedThisFrame = leftPrimary && !previousLeftPrimary;
         PausePressedThisFrame = menu && !previousMenu;
         ConfirmPressedThisFrame = InteractPressedThisFrame || MonitorPressedThisFrame || (rightPrimary && !previousRightPrimary);
+        CameraSwitchDirectionThisFrame = ReadCameraSwitchDirection(cameraPrevious, cameraNext);
 
         previousRightTrigger = rightTrigger;
         previousLeftPrimary = leftPrimary;
         previousRightPrimary = rightPrimary;
         previousMenu = menu;
+        previousCameraPrevious = cameraPrevious;
+        previousCameraNext = cameraNext;
     }
 
     private void UpdateDesktopButtonEdges()
@@ -127,16 +156,35 @@ public sealed class NightShiftVRRigController : MonoBehaviour
         bool monitor = keyboard != null && (keyboard.tabKey.isPressed || keyboard.mKey.isPressed);
         bool pause = keyboard != null && keyboard.escapeKey.isPressed;
         bool confirm = interact || (keyboard != null && keyboard.spaceKey.isPressed);
+        bool cameraPrevious = keyboard != null && (keyboard.qKey.isPressed || keyboard.leftArrowKey.isPressed);
+        bool cameraNext = keyboard != null && (keyboard.eKey.isPressed || keyboard.rightArrowKey.isPressed);
 
         InteractPressedThisFrame = interact && !previousRightTrigger;
         MonitorPressedThisFrame = monitor && !previousLeftPrimary;
         PausePressedThisFrame = pause && !previousMenu;
         ConfirmPressedThisFrame = confirm && !previousRightPrimary;
+        CameraSwitchDirectionThisFrame = ReadCameraSwitchDirection(cameraPrevious, cameraNext);
 
         previousRightTrigger = interact;
         previousLeftPrimary = monitor;
         previousRightPrimary = confirm;
         previousMenu = pause;
+        previousCameraPrevious = cameraPrevious;
+        previousCameraNext = cameraNext;
+    }
+
+    private int ReadCameraSwitchDirection(bool previousPressed, bool nextPressed)
+    {
+        if (gameController == null || !gameController.IsMonitorOpen)
+            return 0;
+
+        if (previousPressed && !previousCameraPrevious)
+            return -1;
+
+        if (nextPressed && !previousCameraNext)
+            return 1;
+
+        return 0;
     }
 
     private void UpdateDesktopPose()
@@ -153,10 +201,11 @@ public sealed class NightShiftVRRigController : MonoBehaviour
         if (hasControl && mouse != null)
         {
             Vector2 delta = mouse.delta.ReadValue();
-            transform.RotateAround(head.position, Vector3.up, delta.x * desktopMouseSensitivity);
+            transform.Rotate(Vector3.up, delta.x * desktopMouseSensitivity, Space.World);
             desktopPitch = Mathf.Clamp(desktopPitch - delta.y * desktopMouseSensitivity, -75f, 75f);
         }
 
+        head.localPosition = new Vector3(0f, seatedEyeHeight, 0f);
         head.localRotation = Quaternion.Euler(desktopPitch, 0f, 0f);
 
         if (rightHand != null)
@@ -178,8 +227,7 @@ public sealed class NightShiftVRRigController : MonoBehaviour
         if (Mathf.Abs(axis.x) < deadzone)
             return;
 
-        Vector3 pivot = head != null ? head.position : transform.position;
-        transform.RotateAround(pivot, Vector3.up, axis.x * turnSpeed * Time.deltaTime);
+        transform.Rotate(Vector3.up, axis.x * turnSpeed * Time.deltaTime, Space.World);
     }
 
     private void UpdateCharacterCollider()
@@ -203,29 +251,104 @@ public sealed class NightShiftVRRigController : MonoBehaviour
         if (pointerLine == null || InteractionRayOrigin == null)
             return;
 
-        pointerLine.enabled = true;
-        pointerLine.positionCount = 2;
-        pointerLine.SetPosition(0, InteractionRayOrigin.position);
-        pointerLine.SetPosition(1, InteractionRayOrigin.position + InteractionRayOrigin.forward * pointerLength);
-    }
+        bool canInteract = gameController != null && gameController.PlayerHasControl;
+        Ray ray = new Ray(InteractionRayOrigin.position, InteractionRayOrigin.forward);
+        RaycastHit hit = default;
+        bool hasTarget = canInteract
+            && Physics.Raycast(ray, out hit, pointerLength, ~0, QueryTriggerInteraction.Collide)
+            && hit.collider.GetComponentInParent<NightShiftInteractable>() != null;
 
-    private static void UpdateTrackedPose(XRInputDevice device, Transform target)
-    {
-        if (!device.isValid || target == null)
+        pointerLine.enabled = hasTarget;
+        if (!hasTarget)
             return;
 
-        if (device.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 position))
-            target.localPosition = position;
+        pointerLine.widthMultiplier = 0.003f;
+        pointerLine.startColor = new Color(0.65f, 0.9f, 1f, 0.7f);
+        pointerLine.endColor = new Color(0.35f, 0.7f, 1f, 0.18f);
+        pointerLine.positionCount = 2;
+        pointerLine.SetPosition(0, InteractionRayOrigin.position);
+        pointerLine.SetPosition(1, hit.point);
+    }
 
-        if (device.TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion rotation))
-            target.localRotation = rotation;
+    private static void HideDebugControllerMarker(Transform controller, string markerName)
+    {
+        if (controller == null)
+            return;
+
+        Transform marker = controller.Find(markerName);
+        if (marker != null)
+            marker.gameObject.SetActive(false);
+    }
+
+    private void UpdateVrTrackedPoses()
+    {
+        if (head == null || !TryReadTrackedPose(headDevice, out Vector3 headPosition, out Quaternion headRotation))
+            return;
+
+        if (!trackingOriginCalibrated)
+            CalibrateTrackingOrigin(headPosition, headRotation);
+
+        ApplyTrackedPose(head, headPosition, headRotation);
+        UpdateTrackedPose(leftDevice, leftHand);
+        UpdateTrackedPose(rightDevice, rightHand);
+    }
+
+    private void CalibrateTrackingOrigin(Vector3 headPosition, Quaternion headRotation)
+    {
+        initialHeadTrackingPosition = headPosition;
+
+        Vector3 horizontalForward = Vector3.ProjectOnPlane(headRotation * Vector3.forward, Vector3.up);
+        float yawCorrection = horizontalForward.sqrMagnitude > 0.0001f
+            ? Vector3.SignedAngle(horizontalForward, Vector3.forward, Vector3.up)
+            : 0f;
+        trackingYawCorrection = Quaternion.AngleAxis(yawCorrection, Vector3.up);
+
+        trackingOriginCalibrated = true;
+    }
+
+    private void UpdateTrackedPose(XRInputDevice device, Transform target)
+    {
+        if (target == null || !TryReadTrackedPose(device, out Vector3 position, out Quaternion rotation))
+            return;
+
+        ApplyTrackedPose(target, position, rotation);
+    }
+
+    private void ApplyTrackedPose(Transform target, Vector3 position, Quaternion rotation)
+    {
+        Vector3 positionFromInitialHead = trackingYawCorrection * (position - initialHeadTrackingPosition);
+        target.localPosition = positionFromInitialHead + Vector3.up * seatedEyeHeight;
+        target.localRotation = trackingYawCorrection * rotation;
+    }
+
+    private static bool TryReadTrackedPose(XRInputDevice device, out Vector3 position, out Quaternion rotation)
+    {
+        position = Vector3.zero;
+        rotation = Quaternion.identity;
+
+        if (!device.isValid)
+            return false;
+
+        if (device.TryGetFeatureValue(CommonUsages.isTracked, out bool isTracked) && !isTracked)
+            return false;
+
+        bool hasPosition = device.TryGetFeatureValue(CommonUsages.devicePosition, out position);
+        bool hasRotation = device.TryGetFeatureValue(CommonUsages.deviceRotation, out rotation);
+        return hasPosition && hasRotation;
     }
 
     private void RefreshDevices()
     {
-        headDevice = GetDeviceAtNode(XRNode.Head);
+        XRInputDevice refreshedHeadDevice = GetDeviceAtNode(XRNode.Head);
+        bool headDeviceChanged = headDevice.isValid != refreshedHeadDevice.isValid
+            || (headDevice.isValid && refreshedHeadDevice.isValid && !headDevice.Equals(refreshedHeadDevice));
+
+        headDevice = refreshedHeadDevice;
         leftDevice = GetDeviceAtNode(XRNode.LeftHand);
         rightDevice = GetDeviceAtNode(XRNode.RightHand);
+
+        if (headDeviceChanged)
+            RecenterTrackingOrigin();
     }
 
     private XRInputDevice GetDeviceAtNode(XRNode node)
@@ -257,5 +380,8 @@ public sealed class NightShiftVRRigController : MonoBehaviour
         previousLeftPrimary = false;
         previousRightPrimary = false;
         previousMenu = false;
+        previousCameraPrevious = false;
+        previousCameraNext = false;
+        CameraSwitchDirectionThisFrame = 0;
     }
 }
